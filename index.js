@@ -60,6 +60,54 @@ async function getQuote({
   }
 }
 
+export async function getUserBalance({
+  walletAddress,
+  rpcUrl,
+  tokenAddress = null, // null = native token (ETH)
+}) {
+  if (!walletAddress) {
+    throw new Error("walletAddress is required")
+  }
+  if (!rpcUrl) {
+    throw new Error("rpcUrl is required")
+  }
+
+  const provider = new ethers.JsonRpcProvider(rpcUrl)
+
+  // 🔹 If no tokenAddress → return native balance (ETH)
+  if (!tokenAddress) {
+    const balance = await provider.getBalance(walletAddress)
+    return {
+      symbol: "ETH",
+      decimals: 18,
+      raw: balance,
+      formatted: ethers.formatEther(balance),
+    }
+  }
+
+  // 🔹 If tokenAddress exists → return ERC20 balance
+  const erc20Abi = [
+    "function balanceOf(address) view returns (uint256)",
+    "function decimals() view returns (uint8)",
+    "function symbol() view returns (string)",
+  ]
+
+  const token = new ethers.Contract(tokenAddress, erc20Abi, provider)
+
+  const [rawBalance, decimals, symbol] = await Promise.all([
+    token.balanceOf(walletAddress),
+    token.decimals(),
+    token.symbol(),
+  ])
+
+  return {
+    symbol,
+    decimals,
+    raw: rawBalance,
+    formatted: ethers.formatUnits(rawBalance, decimals),
+  }
+}
+
 async function transferFunds({
   to,
   amount,
@@ -161,20 +209,65 @@ async function indexTransaction({ txHash, chainId, referrer = "relay.link" }) {
 // Example usage
 async function runExample() {
   try {
-    const quote = await getQuote({
-      user: "0x94b4214c2F27d23208c7B66dF60AA23F802a1d25",
-      originChainId: 11155111,
-      destinationChainId: 84532,
-      originCurrency: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
-      destinationCurrency: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-      recipient: "0x94b4214c2F27d23208c7B66dF60AA23F802a1d25",
-      amount: "1700000",
+    // ----- CONFIG -----
+    // BASE - USDC
+    const ORIGIN = {
+      currency: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      chainId: 8453,
+    }
+
+    // OP Mainnet - USDC
+    const DESTINATION = {
+      currency: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+      chainId: 10,
+    }
+
+    const USER_WALLET_ADDRESS = "0x97153e31abfd0ea7c782b0c8a97026ea07e98e00"
+    const RECIPIENT = USER_WALLET_ADDRESS
+
+    const AMOUNT = "1344800"
+
+    // ----- GET BALANCE -----
+    const balance = await getUserBalance({
+      walletAddress: USER_WALLET_ADDRESS,
+      rpcUrl: process.env.BASE_MAINNET_RPC,
+      tokenAddress: ORIGIN.currency,
     })
 
-    console.log("Quote received:", quote)
+    console.log(
+      "Balance at target chain:",
+      balance.formatted + " " + balance.symbol
+    )
+
+    // ----- GET QUOTE -----
+    const quote = await getQuote({
+      user: USER_WALLET_ADDRESS,
+      originChainId: ORIGIN.chainId,
+      originCurrency: ORIGIN.currency,
+      destinationChainId: DESTINATION.chainId,
+      destinationCurrency: DESTINATION.currency,
+      recipient: RECIPIENT,
+      amount: AMOUNT,
+      useDepositAddress: true,
+      refundTo: RECIPIENT,
+    })
+
+    console.log("Quote:", quote)
+    console.log("Deposit address:", quote.steps[0].depositAddress)
+    console.log("Request ID:", quote.steps[0].requestId)
+    // console.log("Data:", quote.steps[0].items)
+
+    // ----- GET STATUS -----
+    const status = await getStatus({ requestId: quote.steps[0].requestId })
+    console.log("Status:", status)
   } catch (error) {
     console.error("Failed to get quote:", error.message)
   }
+}
+
+const getStatus = async ({ requestId }) => {
+  const response = await relayApi.get(`/intents/status?requestId=${requestId}`)
+  return response.data
 }
 
 // Example transfer function
@@ -205,8 +298,8 @@ async function runTransferExample() {
 
 // Run the examples
 // testRelayApi()
-// runExample()
-runTransferExample()
+runExample()
+// runTransferExample()
 
 // interacting with: 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238
 // transfering to: 0x3e34b27a9bf37D8424e1a58aC7fc4D06914B76B9
